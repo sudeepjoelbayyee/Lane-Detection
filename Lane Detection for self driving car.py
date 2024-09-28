@@ -1,70 +1,106 @@
 import cv2
 import numpy as np
 
-def draw_lines(img, lines):
-    img = np.copy(img)
-    blank_image = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
+def canny(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    canny = cv2.Canny(blur, 50, 150)
+    return canny
 
-    if lines is not None:
-        for line in lines:
-            for x1, y1, x2, y2 in line:
-                cv2.line(blank_image, (x1, y1), (x2, y2), (0, 255, 0), 10)
-
-    img = cv2.addWeighted(img, 0.8, blank_image, 1, 0.0)
-    return img
-
-
-def ROI(img, vertices):
+def region_of_interest(img):
+    height, width = img.shape[:2]
     mask = np.zeros_like(img)
-    cv2.fillPoly(mask,vertices,255)
+    
+    # Define a region that is proportional to the frame size
+    polygon = np.array([[
+        (int(0.1 * width), height),  # Bottom left
+        (int(0.9 * width), height),  # Bottom right
+        (int(0.6 * width), int(0.6 * height)),  # Top right
+        (int(0.4 * width), int(0.6 * height))   # Top left
+    ]], np.int32)
+
+    cv2.fillPoly(mask, polygon, 255)
     masked_image = cv2.bitwise_and(img, mask)
     return masked_image
 
-def process(img):
+def houghLines(img):
+    lines = cv2.HoughLinesP(img, rho=2, theta=np.pi/180, threshold=100, minLineLength=40, maxLineGap=5)
+    return lines
+
+def display_lines(img, lines):
+    line_img = np.zeros_like(img)
+    if lines is not None:
+        for line in lines:
+            for x1, y1, x2, y2 in line:
+                cv2.line(img, (x1, y1), (x2, y2), (0, 0, 255), 10)
+    return img
+
+def make_points(img, line):
+    slope, intercept = line
     height = img.shape[0]
-    width = img.shape[1]
+    y1 = height
+    y2 = int(height * 0.6)  # Line ends at 60% of the image height
+    x1 = int((y1 - intercept) / slope)
+    x2 = int((y2 - intercept) / slope)
+    return [x1, y1, x2, y2]
 
-    # Convert image to gray
-    gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+def average_slope_intercept(img, lines):
+    left_fit = []
+    right_fit = []
+    
+    if lines is None:
+        return None
+    
+    for line in lines:
+        for x1, y1, x2, y2 in line:
+            slope, intercept = np.polyfit((x1, x2), (y1, y2), 1)
+            if slope < 0:  # Left lane
+                left_fit.append((slope, intercept))
+            else:  # Right lane
+                right_fit.append((slope, intercept))
+    
+    if left_fit:
+        left_fit_average = np.average(left_fit, axis=0)
+        left_line = make_points(img, left_fit_average)
+    else:
+        left_line = None
+    
+    if right_fit:
+        right_fit_average = np.average(right_fit, axis=0)
+        right_line = make_points(img, right_fit_average)
+    else:
+        right_line = None
+    
+    return [left_line, right_line]
 
-    # Apply Gaussian Blur
-    blur = cv2.GaussianBlur(src=gray,ksize=(5,5),sigmaX=0)
+def display_lines_average(img, lines):
+    line_img = np.zeros_like(img)
+    if lines is not None:
+        for line in lines:
+            if line is not None:
+                x1, y1, x2, y2 = line
+                cv2.line(img, (x1, y1), (x2, y2), (0, 255, 0), 10)
+    return img
 
-    # Detect edges using canny
-    canny = cv2.Canny(blur,threshold1=50,threshold2=150)
-
-    # Define ROI
-    vertices = np.array([[
-        (int(width * 0.1), height),   # Bottom-left corner (10% from the left edge)
-        (int(width * 0.55), int(height * 0.55)),  # Peak of the triangle (middle of the image, 60% down the height)
-        (width, height)    # Bottom-right corner (10% from the right edge)
-    ]], dtype=np.int32)
-    cropped_image = ROI(img=canny,vertices=vertices)
-
-    # Detect lines using Hough transform
-    lines = cv2.HoughLinesP(image=cropped_image,rho=2,theta=np.pi/180,threshold=100,lines=np.array([]),minLineLength=40,maxLineGap=5)
-
-    # Draw detected lines on the original image
-    result = draw_lines(img,lines)
-
-    return result,cropped_image
-cap = cv2.VideoCapture("road.mp4")
+cap = cv2.VideoCapture('test1.mp4')
 
 while cap.isOpened():
-    ret,frame = cap.read()
-    if ret:
-        # Process the frame to detect lanes
-        lane_detected,roi = process(frame)
+    ret, frame = cap.read()
+    
+    if not ret:
+        break
+    
+    canny_out = canny(frame)
+    masked_output = region_of_interest(canny_out)
+    lines = houghLines(masked_output)
 
-        lane_detected = cv2.resize(lane_detected,(720,480))
-        roi = cv2.resize(roi,(720,480))
+    average_lines = average_slope_intercept(frame, lines)
+    line_img = display_lines_average(frame, average_lines)
 
-        # Display the lane detected frame
-        cv2.imshow("Lane Detection",lane_detected)
-        cv2.imshow("ROI",roi)
-
-        if cv2.waitKey(1) & 0xFF == 27:
-            break
+    cv2.imshow("Lane Detection", line_img)
+    
+    if cv2.waitKey(10) & 0xFF == 27:
+        break
 
 cap.release()
 cv2.destroyAllWindows()
